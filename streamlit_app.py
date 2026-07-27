@@ -1,47 +1,255 @@
-# these are all the libraries my app needs
+# all the libraries my app needs
 import os
-import joblib          # to load my saved model
-import streamlit as st # the web app framework
+import time
+import joblib
 import numpy as np
 import pandas as pd
+import streamlit as st
+import matplotlib
+matplotlib.use("Agg")               # render charts without a screen (needed on the server)
+import matplotlib.pyplot as plt
+from matplotlib.patches import Wedge, Circle
 
 # i import my own preprocessing so the app cleans the input the SAME way i trained
 from features import preprocess
 
-# sets the browser tab title, icon, and keeps the layout centered
-st.set_page_config(page_title="Purchase-Intent Predictor",layout="centered")
+# page title, tab icon, and a wide layout so the HUD has room to breathe
+st.set_page_config(page_title="IntentRadar", layout="wide")
 
 
-# this loads my trained model from the .pkl file
-# @st.cache_resource means it only loads once, not every time i click a button (faster)
+# this whole block is my custom styling to give it the dark JARVIS/HUD look.
+# i inject CSS with st.markdown because streamlit doesn't do this theming on its own.
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&display=swap');
+:root { --cyan:#22d3ee; --amber:#ffb020; --panel:#0e1622; --line:#1f3346;
+        --head:'Gowun Batang',serif; --body:'Gowun Batang',serif; }
+
+/* force my font on everything, including the dropdown popup (it renders outside the app,
+   so i list the popover/menu bits too, otherwise the options stay the default font) */
+html, body, .stApp, .stApp p, .stMarkdown, label, input, textarea, button,
+[data-baseweb="select"] *, [data-baseweb="popover"] *, [data-baseweb="menu"] *,
+[role="option"], [role="listbox"] * { font-family:var(--body) !important; }
+
+/* dark background with a faint glow and scan-line grid for the HUD feel */
+.stApp {
+    background:
+        radial-gradient(circle at 20% 10%, rgba(34,211,238,.06), transparent 40%),
+        radial-gradient(circle at 90% 80%, rgba(34,211,238,.05), transparent 40%),
+        repeating-linear-gradient(0deg, transparent, transparent 38px, rgba(34,211,238,.03) 39px),
+        #0a0e14;
+    color:#d7e6ee;
+}
+h1,h2,h3,h4 { font-family:var(--head) !important; letter-spacing:1px; }
+
+/* my font sizes, bumped up so everything is easy to read */
+.stApp, .stApp p, .stMarkdown { font-size:1.28rem; font-weight:500; }
+label, [data-testid="stWidgetLabel"] p { font-size:1.28rem !important; font-weight:500; }
+h1 { font-size:3.4rem !important; }
+h2 { font-size:1.9rem !important; }
+
+/* the numbers i type, dropdown text and radios, made bigger too */
+input, textarea, .stNumberInput input { font-size:1.25rem !important; }
+[data-baseweb="select"] * { font-size:1.25rem !important; }
+.stRadio label p, [data-testid="stExpander"] summary,
+[data-testid="stExpander"] p { font-size:1.25rem !important; }
+.stButton>button { font-size:1.3rem !important; padding:.7rem 1rem !important; }
+
+/* a reusable HUD panel: dark box, cyan border, little corner brackets */
+.hud {
+    position:relative; background:var(--panel);
+    border:1px solid var(--line); border-radius:4px;
+    padding:1rem 1.2rem; margin:.4rem 0;
+    box-shadow:0 0 18px rgba(34,211,238,.07) inset;
+}
+.hud::before, .hud::after {
+    content:""; position:absolute; width:14px; height:14px; border:2px solid var(--cyan);
+}
+.hud::before { top:-1px; left:-1px; border-right:0; border-bottom:0; }
+.hud::after  { bottom:-1px; right:-1px; border-left:0; border-top:0; }
+
+/* small uppercase cyan labels i use as section headers */
+.label { font-family:var(--body); color:#6fb8cc; font-size:1.02rem; font-weight:600;
+         letter-spacing:2px; text-transform:uppercase; }
+
+/* the verdict box, glows cyan for buy and amber for no-buy */
+.verdict {
+    font-family:var(--body); text-align:center;
+    padding:1.1rem; border-radius:4px; letter-spacing:2px;
+}
+.verdict.buy   { border:1px solid var(--cyan);  color:#8ef1ff;
+                 box-shadow:0 0 22px rgba(34,211,238,.35); background:rgba(34,211,238,.06); }
+.verdict.nobuy { border:1px solid var(--amber); color:#ffd27a;
+                 box-shadow:0 0 22px rgba(255,176,32,.25); background:rgba(255,176,32,.05); }
+.verdict .big  { font-size:1.6rem; font-weight:700; margin:.2rem 0; }
+
+/* my glowing cyan button */
+.stButton>button {
+    font-family:var(--body) !important; letter-spacing:2px; text-transform:uppercase;
+    background:rgba(34,211,238,.08) !important; color:#8ef1ff !important;
+    border:1px solid var(--cyan) !important; border-radius:3px !important;
+}
+.stButton>button:hover { box-shadow:0 0 18px rgba(34,211,238,.5) !important; background:rgba(34,211,238,.18) !important; }
+
+/* sidebar styled like a system console */
+[data-testid="stSidebar"] { background:#0b1119; border-right:1px solid var(--line); }
+.sys-line { font-family:var(--body); font-size:1.05rem; font-weight:500; color:#9fd6e4; margin:.2rem 0; }
+.sys-key  { color:#5a7a88; }
+
+</style>
+""", unsafe_allow_html=True)
+
+
+# load my trained model. @st.cache_resource means it only loads once, not on every click
 @st.cache_resource
 def load_model():
-    # i build the path relative to this file so it still works after i deploy
+    # path relative to this file so it works after i deploy too
     path = os.path.join(os.path.dirname(__file__), "models", "model.pkl")
-    artifact = joblib.load(path)
-    # i saved the model AND the training columns together, so i unpack both here
-    return artifact["model"], list(artifact["columns"])
+    art = joblib.load(path)
+    # i saved the model and the training columns together, so i unpack both
+    return art["model"], list(art["columns"])
 
-# try/except so if the model file is missing, the user sees a clear message
-# instead of the app crashing with a scary error
+# if the model file is missing, show a clear message instead of crashing
 try:
     model, train_columns = load_model()
 except Exception as e:
-    st.error("Could not load the model file. Make sure "
-             "models/model.pkl is present. "
-             f"Details: {e}")
-    st.stop()   # stop the app here if there's no model to use
+    st.error(f"SYSTEM OFFLINE. Could not load models/model.pkl. Details: {e}")
+    st.stop()
 
 
-# the title and a short line explaining what the app does
-st.title(" Purchase-Intent Predictor")
-st.caption("Enter what a live website visitor is doing, and the model predicts whether "
-           "the session will end in a purchase, so the team can nudge high-intent "
-           "shoppers at the right moment.")
+# a "typical" session (medians / most common values from my training data).
+# my explainer swaps each signal to this to see how much that signal changed the result.
+BASELINE = {
+    "Administrative": 1.0, "Administrative_Duration": 9.0, "Informational": 0.0,
+    "Informational_Duration": 0.0, "ProductRelated": 18.0, "ProductRelated_Duration": 608.94,
+    "BounceRates": 0.0029, "ExitRates": 0.025, "PageValues": 0.0, "SpecialDay": 0.0,
+    "OperatingSystems": 2.0, "Browser": 2.0, "Region": 3.0, "TrafficType": 2.0,
+    "Month": "May", "VisitorType": "Returning_Visitor", "Weekend": "False",
+}
+# the signals my explainer reports on, with friendly names to show the user
+EXPLAIN = {
+    "PageValues": "Page value", "ProductRelated": "Product pages",
+    "ProductRelated_Duration": "Time on products", "ExitRates": "Exit rate",
+    "BounceRates": "Bounce rate", "Administrative": "Admin pages",
+    "Month": "Month", "VisitorType": "Visitor type",
+}
 
 
-# i made 2 preset scenarios so i can fill all the inputs in one click during my demo.
-# "High-intent shopper" should predict Buy, "Casual browser" should predict No buy.
+# helper: preprocess one session the same as training, line up the columns, return buy probability
+def _proba(row_df):
+    x = preprocess(row_df).reindex(columns=train_columns, fill_value=0)
+    return float(model.predict_proba(x)[0, 1])
+
+
+def explain(row_df):
+    # my "why this prediction" logic. i take the real probability, then for each signal i
+    # swap it to the typical value and predict again. the difference tells me how much that
+    # signal pushed the result up (toward buy) or down (toward no-buy). uses only my model.
+    base = _proba(row_df)
+    effects = []
+    for feat, label in EXPLAIN.items():
+        mod = row_df.copy()
+        mod.loc[:, feat] = BASELINE[feat]
+        effects.append((label, base - _proba(mod)))   # positive means it pushed toward BUY
+    effects.sort(key=lambda t: abs(t[1]), reverse=True)   # biggest effect first
+    return effects[:6]
+
+
+def gauge(proba):
+    # my arc-reactor style dial. i draw a dark ring, then a cyan (or amber) glowing arc
+    # that fills up to the probability, with the % in the middle.
+    pct = proba * 100
+    color = "#22d3ee" if proba >= 0.5 else "#ffb020"
+    fig, ax = plt.subplots(figsize=(3.4, 3.4))
+    fig.patch.set_alpha(0.0); ax.set_aspect("equal"); ax.axis("off")
+    ax.set_xlim(-1.25, 1.25); ax.set_ylim(-1.25, 1.25)
+    ax.add_patch(Wedge((0, 0), 1.0, 0, 360, width=0.16, facecolor="#16202e"))   # background ring
+    start, span = 90, proba * 360                                              # start at top, fill clockwise
+    for w, a in [(0.34, 0.06), (0.24, 0.13)]:                                  # faint wider arcs make the glow
+        ax.add_patch(Wedge((0, 0), 1.0, start - span, start, width=w, facecolor=color, alpha=a))
+    ax.add_patch(Wedge((0, 0), 1.0, start - span, start, width=0.16, facecolor=color))
+    ax.add_patch(Circle((0, 0), 0.62, facecolor="#0a0e14", edgecolor=color, lw=1.2, alpha=0.9))
+    ax.text(0, 0.06, f"{pct:.0f}%", ha="center", va="center", color=color,
+            fontsize=32, fontweight="bold", fontfamily="DejaVu Sans")
+    ax.text(0, -0.30, "INTENT", ha="center", va="center", color="#7dd3e8",
+            fontsize=11, fontfamily="DejaVu Sans")
+    return fig
+
+
+def drivers_chart(effects):
+    # horizontal bars of what drove the call. cyan bars push toward buy, amber push toward no-buy.
+    labels = [e[0] for e in effects][::-1]
+    vals = [e[1] * 100 for e in effects][::-1]
+    colors = ["#22d3ee" if v >= 0 else "#ffb020" for v in vals]
+    fig, ax = plt.subplots(figsize=(5.4, 3.2))
+    fig.patch.set_alpha(0.0); ax.set_facecolor("none")
+    ax.barh(range(len(labels)), vals, color=colors, height=0.62)
+    ax.set_yticks(range(len(labels))); ax.set_yticklabels(labels, color="#cfe8f0", fontfamily="DejaVu Sans", fontsize=9)
+    ax.axvline(0, color="#3a4a5a", lw=1)
+    ax.tick_params(colors="#5a6b7a", labelsize=8)
+    for s in ax.spines.values(): s.set_visible(False)
+    ax.set_xlabel("effect on purchase probability  (%)", color="#7dd3e8", fontsize=8, fontfamily="DejaVu Sans")
+    return fig
+
+
+def play_video(kind):
+    # play my higgsfield HUD clip fullscreen over everything after a scan (buy or nobuy).
+    # it covers the whole screen (and the result underneath) while it plays, then fades out
+    # and disappears when the clip ends, revealing the result. muted so autoplay is allowed.
+    # streamlit serves the file from the static/ folder (enableStaticServing in config.toml).
+    # for the buy clip i add #t=1 so it skips the slow first second and jumps to the cash burst.
+    start = "#t=1" if kind == "buy" else ""
+    play_secs = 4 if kind == "buy" else 5      # how long the clip actually plays
+    src = f"app/static/{kind}.mp4{start}"
+    st.markdown(f"""
+    <div class="vid-overlay">
+      <video autoplay muted playsinline>
+        <source src="{src}" type="video/mp4">
+      </video>
+    </div>
+    <style>
+    .vid-overlay {{
+        position:fixed; inset:0; z-index:999999; pointer-events:none;
+        background:#0a0e14; overflow:hidden;
+        animation:vidhide {play_secs}s forwards;
+    }}
+    .vid-overlay video {{ width:100%; height:100%; object-fit:cover; }}
+    @keyframes vidhide {{ 0%,88% {{opacity:1;}} 100% {{opacity:0; visibility:hidden;}} }}
+    </style>
+    """, unsafe_allow_html=True)
+
+
+# the sidebar, styled like a system console with my branding, model stats and a how-it-works
+with st.sidebar:
+    st.markdown("## INTENTRADAR")
+    st.markdown('<span class="label">real-time purchase-intent detection</span>', unsafe_allow_html=True)
+    st.markdown('<div class="sys-line">◉ SYSTEM ONLINE</div>', unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown('<span class="label">Model readout</span>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sys-line"><span class="sys-key">engine  </span> Gradient Boosting</div>'
+        '<div class="sys-line"><span class="sys-key">F1      </span> 0.66</div>'
+        '<div class="sys-line"><span class="sys-key">ROC-AUC </span> 0.94</div>'
+        '<div class="sys-line"><span class="sys-key">dataset </span> UCI Online Shoppers</div>',
+        unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown('<span class="label">How it works</span>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sys-line">1. feed the live session signals</div>'
+        '<div class="sys-line">2. scan the session and read its intent</div>'
+        '<div class="sys-line">3. see the drivers and the call</div>',
+        unsafe_allow_html=True)
+
+
+# the page header
+st.markdown("# INTENTRADAR")
+st.markdown('<span class="label">Scanning a live session for purchase intent, so the team '
+            'can nudge high-intent shoppers at the right moment</span>', unsafe_allow_html=True)
+st.write("")
+
+
+# two ready-made scenarios so i can fill every input in one click during my demo.
+# high-intent should come out as buy, casual browser as no-buy.
 PRESETS = {
     "Custom (enter your own below)": None,
     "High-intent shopper": dict(
@@ -57,10 +265,8 @@ PRESETS = {
         Month="Feb", VisitorType="New_Visitor", Weekend="False",
         OperatingSystems=1, Browser=1, Region=3, TrafficType=1),
 }
-# the dropdown to pick a preset
-preset_name = st.selectbox("Start from a scenario", list(PRESETS.keys()))
-# P holds the chosen preset's values, which i use as the default for each input below.
-# if the user picks "Custom" (None), i fall back to the high-intent numbers as defaults
+preset_name = st.selectbox("▸ Load scenario", list(PRESETS.keys()))
+# P holds the chosen preset, which i use as the default value of each input below
 P = PRESETS[preset_name] or PRESETS["High-intent shopper"]
 
 # the month and visitor options the model was trained on
@@ -68,72 +274,53 @@ MONTHS = ["Feb", "Mar", "May", "June", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 VISITORS = ["Returning_Visitor", "New_Visitor", "Other"]
 
 
-# i used plain english labels here (not the raw column names) so a marketing person
-# can understand it, which is what the rubric wants for the target audience
-st.subheader("Session behaviour")
-# split the form into 2 columns so it's not one long list
+# my inputs, split into two columns with plain-english labels the target audience understands
+st.markdown('<span class="label">Session signals</span>', unsafe_allow_html=True)
 c1, c2 = st.columns(2)
 with c1:
-    # number_input(label, min, max, default) makes a box that only accepts numbers in range
-    product_related = st.number_input("Product pages viewed", 0, 800,
-                                       int(P["ProductRelated"]))
-    product_dur = st.number_input("Time on product pages (sec)", 0.0, 60000.0,
-                                   float(P["ProductRelated_Duration"]))
-    admin = st.number_input("Account/admin pages viewed", 0, 100,
-                            int(P["Administrative"]))
-    admin_dur = st.number_input("Time on admin pages (sec)", 0.0, 6000.0,
-                                float(P["Administrative_Duration"]))
+    product_related = st.number_input("Product pages viewed", 0, 800, int(P["ProductRelated"]))
+    product_dur = st.number_input("Time on product pages (sec)", 0.0, 60000.0, float(P["ProductRelated_Duration"]))
+    admin = st.number_input("Account/admin pages viewed", 0, 100, int(P["Administrative"]))
+    admin_dur = st.number_input("Time on admin pages (sec)", 0.0, 6000.0, float(P["Administrative_Duration"]))
     info = st.number_input("Info pages viewed", 0, 100, int(P["Informational"]))
-    info_dur = st.number_input("Time on info pages (sec)", 0.0, 6000.0,
-                               float(P["Informational_Duration"]))
+    info_dur = st.number_input("Time on info pages (sec)", 0.0, 6000.0, float(P["Informational_Duration"]))
 with c2:
-    # help= adds a little (?) tooltip explaining the field
-    page_values = st.number_input("Page Value (Google Analytics)", 0.0, 400.0,
-                                  float(P["PageValues"]),
-                                  help="Average value of the pages visited this session. "
-                                       "The strongest single signal in the model.")
-    # slider is nicer than a box for values between 0 and 1
+    page_values = st.number_input("Page Value (Google Analytics)", 0.0, 400.0, float(P["PageValues"]),
+                                  help="Average value of the pages visited this session. Strongest signal in the model.")
     bounce = st.slider("Bounce rate", 0.0, 1.0, float(P["BounceRates"]), 0.005)
     exit_rate = st.slider("Exit rate", 0.0, 1.0, float(P["ExitRates"]), 0.005)
-    special_day = st.slider("Closeness to a special day", 0.0, 1.0,
-                            float(P["SpecialDay"]), 0.2,
+    special_day = st.slider("Closeness to a special day", 0.0, 1.0, float(P["SpecialDay"]), 0.2,
                             help="1.0 = right on a holiday like Valentine's Day.")
     month = st.selectbox("Month", MONTHS, index=MONTHS.index(P["Month"]))
     visitor = st.selectbox("Visitor type", VISITORS, index=VISITORS.index(P["VisitorType"]))
-    # radio = pick one option, horizontal so True/False sit side by side
     weekend = st.radio("Weekend session?", ["True", "False"],
                        index=0 if P["Weekend"] == "True" else 1, horizontal=True)
 
-# i hide the confusing technical codes inside an expander so the main form stays clean
-with st.expander("Advanced (technical session attributes)"):
+# the confusing technical codes are hidden in here so the main form stays clean
+with st.expander("▸ Advanced (technical session attributes)"):
     a1, a2, a3, a4 = st.columns(4)
     op_sys = a1.number_input("OS code", 1, 8, int(P["OperatingSystems"]))
     browser = a2.number_input("Browser code", 1, 13, int(P["Browser"]))
     region = a3.number_input("Region code", 1, 9, int(P["Region"]))
     traffic = a4.number_input("Traffic type", 1, 20, int(P["TrafficType"]))
 
-
-# the widgets already stop out of range numbers, but they can't catch weird COMBINATIONS,
-# so i add my own checks here and collect any problems in this list
+# the widgets already block out-of-range numbers, but i check weird combinations myself
 errors = []
-# time was spent but no pages viewed makes no sense
 if (product_related + admin + info) == 0 and (product_dur + admin_dur + info_dur) > 0:
     errors.append("Time was recorded but no pages were viewed, please check the inputs.")
-# bounce rate should never be higher than exit rate for a real session
 if bounce > exit_rate + 1e-9:
     errors.append("Bounce rate cannot be higher than exit rate for a session.")
 
-
-# this runs only when the user clicks the Predict button
-if st.button("Predict purchase intent", type="primary"):
-    # if my checks found problems, show them and don't predict
+st.write("")
+# everything below only runs when the scan button is clicked
+if st.button("▸ SCAN SESSION", type="primary", use_container_width=True):
     if errors:
         for msg in errors:
             st.error(msg)
     else:
         # try/except so a bad input shows a message instead of crashing the app
         try:
-            # put all the inputs into one dictionary, then into a 1-row dataframe
+            # put all my inputs into one row
             row = dict(
                 Administrative=admin, Administrative_Duration=admin_dur,
                 Informational=info, Informational_Duration=info_dur,
@@ -142,39 +329,58 @@ if st.button("Predict purchase intent", type="primary"):
                 SpecialDay=special_day, OperatingSystems=op_sys, Browser=browser,
                 Region=region, TrafficType=traffic, Month=month,
                 VisitorType=visitor, Weekend=weekend)
-            df_input = pd.DataFrame([row])
+            row_df = pd.DataFrame([row])
 
-            # run the SAME preprocessing as training (engineer features + one-hot encode)
-            df_input = preprocess(df_input)
-            # one row only creates its own category columns, so i reindex to the full
-            # training columns and fill the missing ones with 0, so it matches the model
-            df_input = df_input.reindex(columns=train_columns, fill_value=0)
-
-            # predict() gives 0 or 1 (buy or not), predict_proba() gives the probability
-            will_buy = bool(model.predict(df_input)[0])
-            proba = float(model.predict_proba(df_input)[0, 1])
+            # a short pause + spinner to make it feel like it's really scanning
+            with st.spinner("▸ ANALYZING SESSION SIGNALS..."):
+                time.sleep(0.7)
+                proba = _proba(row_df)
+                will_buy = proba >= 0.5
+                effects = explain(row_df)
         except Exception as e:
-            st.error(f"Prediction failed, please check the inputs. Details: {e}")
+            st.error(f"Scan failed, please check the inputs. Details: {e}")
             st.stop()
 
-        # a progress bar as a visual of the probability
-        st.progress(min(int(proba * 100), 100))
-        # show a different message + recommended action depending on the prediction
-        if will_buy:
-            st.success(f" Likely to purchase, {proba*100:.0f}% probability")
-            st.write("**Recommended action:** trigger a real-time nudge "
-                     "(free-shipping banner, live-chat offer, or small discount).")
-        else:
-            st.info(f" Unlikely to purchase, {proba*100:.0f}% probability")
-            st.write("**Recommended action:** hold incentives and let the visitor browse "
-                     "to avoid wasting discounts.")
+        # play the matching HUD clip over the whole screen, then it fades to reveal the result
+        play_video("buy" if will_buy else "nobuy")
 
-        # 3 metric tiles summarising the result
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Purchase probability", f"{proba*100:.1f}%")
-        m2.metric("Model decision", "Buy" if will_buy else "No buy")
-        m3.metric("Suggested action", "Nudge" if will_buy else "Wait")
+        # left: the gauge. right: the verdict card and recommended action.
+        g_col, v_col = st.columns([1, 1.3])
+        with g_col:
+            st.pyplot(gauge(proba), use_container_width=True)
+        with v_col:
+            if will_buy:
+                st.markdown(
+                    f'<div class="verdict buy"><div class="label">target acquired</div>'
+                    f'<div class="big">◉ HIGH INTENT</div>{proba*100:.1f}% probability of purchase</div>',
+                    unsafe_allow_html=True)
+                st.markdown('<div class="hud"><span class="label">Recommended action</span><br>'
+                            'Trigger a real-time nudge: a free-shipping banner, live-chat offer, '
+                            'or a small discount.</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    f'<div class="verdict nobuy"><div class="label">low signal</div>'
+                    f'<div class="big">○ LOW INTENT</div>{proba*100:.1f}% probability of purchase</div>',
+                    unsafe_allow_html=True)
+                st.markdown('<div class="hud"><span class="label">Recommended action</span><br>'
+                            'Hold incentives and let the visitor browse, to avoid wasting discounts.</div>',
+                            unsafe_allow_html=True)
 
-# a small footer line at the bottom of the page
-st.caption("Model: tuned scikit-learn classifier chosen against a baseline. "
-           "UCI Online Shoppers dataset. Same feature engineering as training.")
+        # the "why this prediction" section: the bar chart on the left, readable bullets on the right
+        st.write("")
+        st.markdown('<span class="label">Signal analysis: what is driving this call</span>', unsafe_allow_html=True)
+        d_col, r_col = st.columns([1.3, 1])
+        with d_col:
+            st.pyplot(drivers_chart(effects), use_container_width=True)
+        with r_col:
+            for label, delta in effects:
+                arrow = "▲ toward BUY" if delta >= 0 else "▼ toward NO-BUY"
+                col = "#22d3ee" if delta >= 0 else "#ffb020"
+                st.markdown(
+                    f'<div class="sys-line"><span style="color:{col}">{arrow}</span> {label}</div>',
+                    unsafe_allow_html=True)
+
+# a small footer line
+st.write("")
+st.markdown('<span class="label">Tuned scikit-learn classifier. UCI Online Shoppers dataset. '
+            'Same feature engineering as training.</span>', unsafe_allow_html=True)
