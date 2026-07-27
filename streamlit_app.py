@@ -43,17 +43,17 @@ html, body, .stApp, .stApp p, .stMarkdown, label, input, textarea, button,
 h1,h2,h3,h4 { font-family:var(--head) !important; letter-spacing:1px; }
 
 /* my font sizes, bumped up so everything is easy to read */
-.stApp, .stApp p, .stMarkdown { font-size:1.28rem; font-weight:500; }
-label, [data-testid="stWidgetLabel"] p { font-size:1.28rem !important; font-weight:500; }
-h1 { font-size:3.4rem !important; }
-h2 { font-size:1.9rem !important; }
+.stApp, .stApp p, .stMarkdown { font-size:1.08rem; font-weight:500; }
+label, [data-testid="stWidgetLabel"] p { font-size:1.08rem !important; font-weight:500; }
+h1 { font-size:2.5rem !important; }
+h2 { font-size:1.4rem !important; }
 
 /* the numbers i type, dropdown text and radios, made bigger too */
-input, textarea, .stNumberInput input { font-size:1.25rem !important; }
-[data-baseweb="select"] * { font-size:1.25rem !important; }
+input, textarea, .stNumberInput input { font-size:1.05rem !important; }
+[data-baseweb="select"] * { font-size:1.05rem !important; }
 .stRadio label p, [data-testid="stExpander"] summary,
-[data-testid="stExpander"] p { font-size:1.25rem !important; }
-.stButton>button { font-size:1.3rem !important; padding:.7rem 1rem !important; }
+[data-testid="stExpander"] p { font-size:1.05rem !important; }
+.stButton>button { font-size:1.1rem !important; padding:.6rem 1rem !important; }
 
 /* a reusable HUD panel: dark box, cyan border, little corner brackets */
 .hud {
@@ -69,7 +69,7 @@ input, textarea, .stNumberInput input { font-size:1.25rem !important; }
 .hud::after  { bottom:-1px; right:-1px; border-left:0; border-top:0; }
 
 /* small uppercase cyan labels i use as section headers */
-.label { font-family:var(--body); color:#6fb8cc; font-size:1.02rem; font-weight:600;
+.label { font-family:var(--body); color:#6fb8cc; font-size:.88rem; font-weight:600;
          letter-spacing:2px; text-transform:uppercase; }
 
 /* the verdict box, glows cyan for buy and amber for no-buy */
@@ -93,7 +93,7 @@ input, textarea, .stNumberInput input { font-size:1.25rem !important; }
 
 /* sidebar styled like a system console */
 [data-testid="stSidebar"] { background:#0b1119; border-right:1px solid var(--line); }
-.sys-line { font-family:var(--body); font-size:1.05rem; font-weight:500; color:#9fd6e4; margin:.2rem 0; }
+.sys-line { font-family:var(--body); font-size:.95rem; font-weight:500; color:#9fd6e4; margin:.2rem 0; }
 .sys-key  { color:#5a7a88; }
 
 </style>
