@@ -12,14 +12,12 @@ from features import preprocess
 st.set_page_config(page_title="Purchase-Intent Predictor",layout="centered")
 
 
-# this loads my trained model from the .joblib file
+# this loads my trained model from the .pkl file
 # @st.cache_resource means it only loads once, not every time i click a button (faster)
 @st.cache_resource
 def load_model():
-    # i build the path relative to this file so it still works after i deploy,
-    # because my project is inside the azanius/ folder not the repo root
-    path = os.path.join(os.path.dirname(__file__), "models",
-                        "purchase_intent_model.joblib")
+    # i build the path relative to this file so it still works after i deploy
+    path = os.path.join(os.path.dirname(__file__), "models", "model.pkl")
     artifact = joblib.load(path)
     # i saved the model AND the training columns together, so i unpack both here
     return artifact["model"], list(artifact["columns"])
@@ -30,7 +28,7 @@ try:
     model, train_columns = load_model()
 except Exception as e:
     st.error("Could not load the model file. Make sure "
-             "models/purchase_intent_model.joblib is present. "
+             "models/model.pkl is present. "
              f"Details: {e}")
     st.stop()   # stop the app here if there's no model to use
 
@@ -70,7 +68,7 @@ MONTHS = ["Feb", "Mar", "May", "June", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 VISITORS = ["Returning_Visitor", "New_Visitor", "Other"]
 
 
-# i use plain english labels here (not the raw column names) so a marketing person
+# i used plain english labels here (not the raw column names) so a marketing person
 # can understand it, which is what the rubric wants for the target audience
 st.subheader("Session behaviour")
 # split the form into 2 columns so it's not one long list
