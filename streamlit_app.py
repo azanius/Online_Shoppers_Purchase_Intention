@@ -128,12 +128,13 @@ except Exception as e:
 
 # a "typical" session (medians / most common values from my training data).
 # my explainer swaps each signal to this to see how much that signal changed the result.
+# i only need entries for the features EXPLAIN actually touches below, my final model dropped
+# Region, Browser, OperatingSystems, Weekend and SpecialDay in feature selection, so those
+# signals can't move the prediction and i don't explain them.
 BASELINE = {
-    "Administrative": 1.0, "Administrative_Duration": 9.0, "Informational": 0.0,
-    "Informational_Duration": 0.0, "ProductRelated": 18.0, "ProductRelated_Duration": 608.94,
-    "BounceRates": 0.0029, "ExitRates": 0.025, "PageValues": 0.0, "SpecialDay": 0.0,
-    "OperatingSystems": 2.0, "Browser": 2.0, "Region": 3.0, "TrafficType": 2.0,
-    "Month": "May", "VisitorType": "Returning_Visitor", "Weekend": "False",
+    "Administrative": 1.0, "ProductRelated": 18.0, "ProductRelated_Duration": 608.94,
+    "BounceRates": 0.0029, "ExitRates": 0.025, "PageValues": 0.0,
+    "Month": "May", "VisitorType": "Returning_Visitor",
 }
 # the signals my explainer reports on, with friendly names to show the user
 EXPLAIN = {
@@ -230,23 +231,28 @@ def play_video(kind):
 
 # two ready-made scenarios so i can fill every input in one click during my demo.
 # high-intent should come out as buy, casual browser as no-buy.
+# note: no Weekend/SpecialDay/OperatingSystems/Browser/Region here, my final model dropped
+# those in feature selection so i don't ask for them any more (see 6. Iterative Model
+# Development > Iteration 2 in the notebook for why).
 PRESETS = {
     "Custom (enter your own below)": None,
     "High-intent shopper": dict(
         Administrative=3, Administrative_Duration=80.0, Informational=1,
         Informational_Duration=20.0, ProductRelated=40, ProductRelated_Duration=1200.0,
-        BounceRates=0.005, ExitRates=0.01, PageValues=35.0, SpecialDay=0.0,
-        Month="Nov", VisitorType="Returning_Visitor", Weekend="True",
-        OperatingSystems=2, Browser=2, Region=1, TrafficType=2),
+        BounceRates=0.005, ExitRates=0.01, PageValues=35.0,
+        Month="Nov", VisitorType="Returning_Visitor", TrafficType=2),
     "Casual browser": dict(
         Administrative=0, Administrative_Duration=0.0, Informational=0,
         Informational_Duration=0.0, ProductRelated=2, ProductRelated_Duration=15.0,
-        BounceRates=0.2, ExitRates=0.2, PageValues=0.0, SpecialDay=0.0,
-        Month="Feb", VisitorType="New_Visitor", Weekend="False",
-        OperatingSystems=1, Browser=1, Region=3, TrafficType=1),
+        BounceRates=0.2, ExitRates=0.2, PageValues=0.0,
+        Month="Feb", VisitorType="New_Visitor", TrafficType=1),
 }
 MONTHS = ["Feb", "Mar", "May", "June", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 VISITORS = ["Returning_Visitor", "New_Visitor", "Other"]
+# fixed values for the 5 features my final model doesn't use. features.py still needs these
+# columns present to build the same shape it was trained on, but their actual value makes no
+# difference to the prediction, so i don't bother the user with sliders/inputs for them.
+UNUSED_DEFAULTS = dict(Weekend=False, SpecialDay=0.0, OperatingSystems=2, Browser=2, Region=1)
 
 # my running list of every scan this session (inputs + result), kept in session_state so it
 # survives reruns. i show it as a table and let the user download it as a CSV.
@@ -274,20 +280,12 @@ def render_scanner():
                                       help="Average value of the pages visited this session. Strongest signal in the model.")
         bounce = st.slider("Bounce rate", 0.0, 1.0, float(P["BounceRates"]), 0.005)
         exit_rate = st.slider("Exit rate", 0.0, 1.0, float(P["ExitRates"]), 0.005)
-        special_day = st.slider("Closeness to a special day", 0.0, 1.0, float(P["SpecialDay"]), 0.2,
-                                help="1.0 = right on a holiday like Valentine's Day.")
         month = st.selectbox("Month", MONTHS, index=MONTHS.index(P["Month"]))
         visitor = st.selectbox("Visitor type", VISITORS, index=VISITORS.index(P["VisitorType"]))
-        weekend = st.radio("Weekend session?", ["True", "False"],
-                           index=0 if P["Weekend"] == "True" else 1, horizontal=True)
-
-    # the confusing technical codes are hidden in here so the main form stays clean
-    with st.expander("▸ Advanced (technical session attributes)"):
-        a1, a2, a3, a4 = st.columns(4)
-        op_sys = a1.number_input("OS code", 1, 8, int(P["OperatingSystems"]))
-        browser = a2.number_input("Browser code", 1, 13, int(P["Browser"]))
-        region = a3.number_input("Region code", 1, 9, int(P["Region"]))
-        traffic = a4.number_input("Traffic type", 1, 20, int(P["TrafficType"]))
+        # traffic type survived feature selection (it is one of my final 39 columns), so it
+        # gets its own input, unlike OS/Browser/Region/Weekend/SpecialDay which i dropped
+        traffic = st.number_input("Traffic source code", 1, 20, int(P["TrafficType"]),
+                                  help="Which channel brought the visitor in (1-20). One of the features my tuned model actually uses.")
 
     # the widgets already block out-of-range numbers, but i check weird combinations myself
     errors = []
@@ -305,15 +303,17 @@ def render_scanner():
         else:
             # try/except so a bad input shows a message instead of crashing the app
             try:
-                # put all my inputs into one row
+                # put all my inputs into one row. features.py still needs Weekend/SpecialDay/
+                # OperatingSystems/Browser/Region columns to exist (it one-hot encodes them),
+                # so i fill those with the fixed UNUSED_DEFAULTS, their actual value can't
+                # change the prediction since my final model dropped them in feature selection
                 row = dict(
                     Administrative=admin, Administrative_Duration=admin_dur,
                     Informational=info, Informational_Duration=info_dur,
                     ProductRelated=product_related, ProductRelated_Duration=product_dur,
                     BounceRates=bounce, ExitRates=exit_rate, PageValues=page_values,
-                    SpecialDay=special_day, OperatingSystems=op_sys, Browser=browser,
-                    Region=region, TrafficType=traffic, Month=month,
-                    VisitorType=visitor, Weekend=weekend)
+                    TrafficType=traffic, Month=month, VisitorType=visitor,
+                    **UNUSED_DEFAULTS)
                 row_df = pd.DataFrame([row])
 
                 # a short pause + spinner to make it feel like it's really scanning
@@ -326,11 +326,14 @@ def render_scanner():
                 st.error(f"Scan failed, please check the inputs. Details: {e}")
                 st.stop()
 
-            # log this scan (the result first, then all the inputs) to the history, newest on top
+            # log this scan (the result first, then the inputs that actually matter) to the
+            # history, newest on top. i leave out UNUSED_DEFAULTS, they are fixed constants
+            # not real inputs, so showing them in the history/CSV would be misleading
+            logged_inputs = {k: v for k, v in row.items() if k not in UNUSED_DEFAULTS}
             st.session_state.history.insert(0, {
                 "Decision": "Buy" if will_buy else "No buy",
                 "Probability %": round(proba * 100, 1),
-                **row,
+                **logged_inputs,
             })
 
             # play the matching HUD clip over the whole screen, then it fades to reveal the result
@@ -411,17 +414,21 @@ def render_about():
         '<div class="hud">'
         '<div class="about-line"><b>Gradient Boosting</b> classifier (scikit-learn), chosen against a '
         'baseline and three other models by <b>F1</b>, then tuned with RandomizedSearchCV.</div>'
-        '<div class="about-line">F1 <b>0.66</b> &nbsp;·&nbsp; ROC-AUC <b>0.94</b> &nbsp;·&nbsp; accuracy <b>0.90</b>. '
+        '<div class="about-line">F1 <b>0.68</b> &nbsp;·&nbsp; ROC-AUC <b>0.94</b> &nbsp;·&nbsp; accuracy <b>0.91</b>. '
         'I judge on F1 (not accuracy) because a do-nothing model is already ~85% accurate but catches zero '
         'buyers.</div></div>', unsafe_allow_html=True)
 
-    st.markdown('<span class="label">Engineered features</span>', unsafe_allow_html=True)
+    st.markdown('<span class="label">Iterative development</span>', unsafe_allow_html=True)
     st.markdown(
         '<div class="hud">'
-        '<div class="about-line"><b>total_pages / total_duration</b> — how much and how long they browsed</div>'
-        '<div class="about-line"><b>avg_time_per_page</b> — how deeply they read</div>'
-        '<div class="about-line"><b>product_focus</b> — share of the session on product pages</div>'
-        '<div class="about-line"><b>has_page_value</b> — whether any valuable page was seen</div>'
+        '<div class="about-line"><b>Feature engineering</b> — i tried 4 combined features '
+        '(total pages, total duration, etc). they did not improve Gradient Boosting, it can already '
+        'learn these interactions from the raw features, so i did not keep them.</div>'
+        '<div class="about-line"><b>Feature selection</b> — using feature importance, i removed the '
+        '5 weakest raw features (Region, Browser, OperatingSystems, Weekend, SpecialDay). this '
+        'slightly improved recall and F1.</div>'
+        '<div class="about-line"><b>Hyperparameter tuning</b> — RandomizedSearchCV over n_estimators, '
+        'max_depth and learning_rate improved F1 again, from ~0.66 at baseline to <b>0.68</b> tuned.</div>'
         '</div>', unsafe_allow_html=True)
 
     st.markdown('<span class="label">How the "why" works</span>', unsafe_allow_html=True)
@@ -434,7 +441,7 @@ def render_about():
     st.markdown('<span class="label">Built with</span>', unsafe_allow_html=True)
     st.markdown(
         '<div class="hud"><div class="about-line">scikit-learn · pandas · numpy · matplotlib · Streamlit. '
-        'The app shares the exact same feature engineering as training (features.py), so there is no '
+        'The app shares the exact same preprocessing as training (features.py), so there is no '
         'train/serve skew.</div></div>', unsafe_allow_html=True)
 
 
@@ -446,9 +453,10 @@ with st.sidebar:
     st.markdown("---")
     st.markdown('<span class="label">Model readout</span>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="sys-line"><span class="sys-key">engine  </span> Gradient Boosting</div>'
-        '<div class="sys-line"><span class="sys-key">F1      </span> 0.66</div>'
+        '<div class="sys-line"><span class="sys-key">engine  </span> Gradient Boosting (tuned)</div>'
+        '<div class="sys-line"><span class="sys-key">F1      </span> 0.68</div>'
         '<div class="sys-line"><span class="sys-key">ROC-AUC </span> 0.94</div>'
+        '<div class="sys-line"><span class="sys-key">accuracy</span> 0.91</div>'
         '<div class="sys-line"><span class="sys-key">dataset </span> UCI Online Shoppers</div>',
         unsafe_allow_html=True)
     st.markdown("---")
@@ -478,4 +486,4 @@ with tab_about:
 # a small footer line
 st.write("")
 st.markdown('<span class="label">Tuned scikit-learn classifier. UCI Online Shoppers dataset. '
-            'Same feature engineering as training.</span>', unsafe_allow_html=True)
+            'Same preprocessing as training.</span>', unsafe_allow_html=True)
