@@ -55,6 +55,12 @@ input, textarea, .stNumberInput input { font-size:1.05rem !important; }
 [data-testid="stExpander"] p { font-size:1.05rem !important; }
 .stButton>button { font-size:1.1rem !important; padding:.6rem 1rem !important; }
 
+/* my two tabs (scanner / about) styled to match the HUD */
+[data-baseweb="tab-list"] { gap:1.5rem; border-bottom:1px solid var(--line); }
+[data-baseweb="tab"] { font-family:var(--body) !important; letter-spacing:2px;
+                       text-transform:uppercase; color:#6fb8cc; }
+[data-baseweb="tab"][aria-selected="true"] { color:#8ef1ff !important; }
+
 /* a reusable HUD panel: dark box, cyan border, little corner brackets */
 .hud {
     position:relative; background:var(--panel);
@@ -96,6 +102,9 @@ input, textarea, .stNumberInput input { font-size:1.05rem !important; }
 .sys-line { font-family:var(--body); font-size:.95rem; font-weight:500; color:#9fd6e4; margin:.2rem 0; }
 .sys-key  { color:#5a7a88; }
 
+/* about-page bullet lines */
+.about-line { font-size:1.05rem; color:#cfe8f0; margin:.35rem 0; }
+.about-line b { color:#8ef1ff; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -219,6 +228,216 @@ def play_video(kind):
     """, unsafe_allow_html=True)
 
 
+# two ready-made scenarios so i can fill every input in one click during my demo.
+# high-intent should come out as buy, casual browser as no-buy.
+PRESETS = {
+    "Custom (enter your own below)": None,
+    "High-intent shopper": dict(
+        Administrative=3, Administrative_Duration=80.0, Informational=1,
+        Informational_Duration=20.0, ProductRelated=40, ProductRelated_Duration=1200.0,
+        BounceRates=0.005, ExitRates=0.01, PageValues=35.0, SpecialDay=0.0,
+        Month="Nov", VisitorType="Returning_Visitor", Weekend="True",
+        OperatingSystems=2, Browser=2, Region=1, TrafficType=2),
+    "Casual browser": dict(
+        Administrative=0, Administrative_Duration=0.0, Informational=0,
+        Informational_Duration=0.0, ProductRelated=2, ProductRelated_Duration=15.0,
+        BounceRates=0.2, ExitRates=0.2, PageValues=0.0, SpecialDay=0.0,
+        Month="Feb", VisitorType="New_Visitor", Weekend="False",
+        OperatingSystems=1, Browser=1, Region=3, TrafficType=1),
+}
+MONTHS = ["Feb", "Mar", "May", "June", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+VISITORS = ["Returning_Visitor", "New_Visitor", "Other"]
+
+# my running list of every scan this session (inputs + result), kept in session_state so it
+# survives reruns. i show it as a table and let the user download it as a CSV.
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+
+def render_scanner():
+    # pick a preset to auto-fill the inputs, or Custom to enter your own
+    preset_name = st.selectbox("▸ Load scenario", list(PRESETS.keys()))
+    P = PRESETS[preset_name] or PRESETS["High-intent shopper"]
+
+    # my inputs, split into two columns with plain-english labels the target audience understands
+    st.markdown('<span class="label">Session signals</span>', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        product_related = st.number_input("Product pages viewed", 0, 800, int(P["ProductRelated"]))
+        product_dur = st.number_input("Time on product pages (sec)", 0.0, 60000.0, float(P["ProductRelated_Duration"]))
+        admin = st.number_input("Account/admin pages viewed", 0, 100, int(P["Administrative"]))
+        admin_dur = st.number_input("Time on admin pages (sec)", 0.0, 6000.0, float(P["Administrative_Duration"]))
+        info = st.number_input("Info pages viewed", 0, 100, int(P["Informational"]))
+        info_dur = st.number_input("Time on info pages (sec)", 0.0, 6000.0, float(P["Informational_Duration"]))
+    with c2:
+        page_values = st.number_input("Page Value (Google Analytics)", 0.0, 400.0, float(P["PageValues"]),
+                                      help="Average value of the pages visited this session. Strongest signal in the model.")
+        bounce = st.slider("Bounce rate", 0.0, 1.0, float(P["BounceRates"]), 0.005)
+        exit_rate = st.slider("Exit rate", 0.0, 1.0, float(P["ExitRates"]), 0.005)
+        special_day = st.slider("Closeness to a special day", 0.0, 1.0, float(P["SpecialDay"]), 0.2,
+                                help="1.0 = right on a holiday like Valentine's Day.")
+        month = st.selectbox("Month", MONTHS, index=MONTHS.index(P["Month"]))
+        visitor = st.selectbox("Visitor type", VISITORS, index=VISITORS.index(P["VisitorType"]))
+        weekend = st.radio("Weekend session?", ["True", "False"],
+                           index=0 if P["Weekend"] == "True" else 1, horizontal=True)
+
+    # the confusing technical codes are hidden in here so the main form stays clean
+    with st.expander("▸ Advanced (technical session attributes)"):
+        a1, a2, a3, a4 = st.columns(4)
+        op_sys = a1.number_input("OS code", 1, 8, int(P["OperatingSystems"]))
+        browser = a2.number_input("Browser code", 1, 13, int(P["Browser"]))
+        region = a3.number_input("Region code", 1, 9, int(P["Region"]))
+        traffic = a4.number_input("Traffic type", 1, 20, int(P["TrafficType"]))
+
+    # the widgets already block out-of-range numbers, but i check weird combinations myself
+    errors = []
+    if (product_related + admin + info) == 0 and (product_dur + admin_dur + info_dur) > 0:
+        errors.append("Time was recorded but no pages were viewed, please check the inputs.")
+    if bounce > exit_rate + 1e-9:
+        errors.append("Bounce rate cannot be higher than exit rate for a session.")
+
+    st.write("")
+    # everything below only runs when the scan button is clicked
+    if st.button("▸ SCAN SESSION", type="primary", use_container_width=True):
+        if errors:
+            for msg in errors:
+                st.error(msg)
+        else:
+            # try/except so a bad input shows a message instead of crashing the app
+            try:
+                # put all my inputs into one row
+                row = dict(
+                    Administrative=admin, Administrative_Duration=admin_dur,
+                    Informational=info, Informational_Duration=info_dur,
+                    ProductRelated=product_related, ProductRelated_Duration=product_dur,
+                    BounceRates=bounce, ExitRates=exit_rate, PageValues=page_values,
+                    SpecialDay=special_day, OperatingSystems=op_sys, Browser=browser,
+                    Region=region, TrafficType=traffic, Month=month,
+                    VisitorType=visitor, Weekend=weekend)
+                row_df = pd.DataFrame([row])
+
+                # a short pause + spinner to make it feel like it's really scanning
+                with st.spinner("▸ ANALYZING SESSION SIGNALS..."):
+                    time.sleep(0.7)
+                    proba = _proba(row_df)
+                    will_buy = proba >= 0.5
+                    effects = explain(row_df)
+            except Exception as e:
+                st.error(f"Scan failed, please check the inputs. Details: {e}")
+                st.stop()
+
+            # log this scan (the result first, then all the inputs) to the history, newest on top
+            st.session_state.history.insert(0, {
+                "Decision": "Buy" if will_buy else "No buy",
+                "Probability %": round(proba * 100, 1),
+                **row,
+            })
+
+            # play the matching HUD clip over the whole screen, then it fades to reveal the result
+            play_video("buy" if will_buy else "nobuy")
+
+            # left: the gauge. right: the verdict card and recommended action.
+            g_col, v_col = st.columns([1, 1.3])
+            with g_col:
+                st.pyplot(gauge(proba), use_container_width=True)
+            with v_col:
+                if will_buy:
+                    st.markdown(
+                        f'<div class="verdict buy"><div class="label">target acquired</div>'
+                        f'<div class="big">◉ HIGH INTENT</div>{proba*100:.1f}% probability of purchase</div>',
+                        unsafe_allow_html=True)
+                    st.markdown('<div class="hud"><span class="label">Recommended action</span><br>'
+                                'Trigger a real-time nudge: a free-shipping banner, live-chat offer, '
+                                'or a small discount.</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown(
+                        f'<div class="verdict nobuy"><div class="label">low signal</div>'
+                        f'<div class="big">○ LOW INTENT</div>{proba*100:.1f}% probability of purchase</div>',
+                        unsafe_allow_html=True)
+                    st.markdown('<div class="hud"><span class="label">Recommended action</span><br>'
+                                'Hold incentives and let the visitor browse, to avoid wasting discounts.</div>',
+                                unsafe_allow_html=True)
+
+            # the "why this prediction" section: the bar chart on the left, readable bullets on the right
+            st.write("")
+            st.markdown('<span class="label">Signal analysis: what is driving this call</span>', unsafe_allow_html=True)
+            d_col, r_col = st.columns([1.3, 1])
+            with d_col:
+                st.pyplot(drivers_chart(effects), use_container_width=True)
+            with r_col:
+                for label, delta in effects:
+                    arrow = "▲ toward BUY" if delta >= 0 else "▼ toward NO-BUY"
+                    col = "#22d3ee" if delta >= 0 else "#ffb020"
+                    st.markdown(
+                        f'<div class="sys-line"><span style="color:{col}">{arrow}</span> {label}</div>',
+                        unsafe_allow_html=True)
+
+    # the prediction history table. it shows whenever i have at least one scan this session.
+    # st.dataframe with a fixed height shows about 10 rows and scrolls for the rest.
+    if st.session_state.history:
+        st.write("")
+        st.markdown('<span class="label">Prediction history (scroll for older scans)</span>', unsafe_allow_html=True)
+        hist_df = pd.DataFrame(st.session_state.history)
+        st.dataframe(hist_df, height=360, use_container_width=True)
+
+        # download the whole history (every input + its prediction) as one CSV file
+        csv = hist_df.to_csv(index=False).encode("utf-8")
+        dl_col, clr_col = st.columns([1, 1])
+        dl_col.download_button("⬇ Download history (CSV)", csv,
+                               "intentradar_predictions.csv", "text/csv",
+                               use_container_width=True)
+        if clr_col.button("Clear history", use_container_width=True):
+            st.session_state.history = []
+            st.rerun()
+
+
+def render_about():
+    st.markdown('<span class="label">What it does</span>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hud"><div class="about-line">Most online store visitors never buy. Sending an '
+        'incentive to everyone wastes margin; sending none loses winnable sales. <b>IntentRadar</b> reads '
+        'a live session and predicts whether it will end in a purchase, so the team can nudge only the '
+        'high-intent shoppers, at the right moment.</div></div>', unsafe_allow_html=True)
+
+    st.markdown('<span class="label">The data</span>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hud"><div class="about-line"><b>UCI Online Shoppers Purchasing Intention</b> dataset: '
+        '12,330 real browsing sessions, 17 features, and a Revenue flag (did the session end in a purchase). '
+        'Only about 15% of sessions convert, which makes this an imbalanced problem.</div></div>',
+        unsafe_allow_html=True)
+
+    st.markdown('<span class="label">The model</span>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hud">'
+        '<div class="about-line"><b>Gradient Boosting</b> classifier (scikit-learn), chosen against a '
+        'baseline and three other models by <b>F1</b>, then tuned with RandomizedSearchCV.</div>'
+        '<div class="about-line">F1 <b>0.66</b> &nbsp;·&nbsp; ROC-AUC <b>0.94</b> &nbsp;·&nbsp; accuracy <b>0.90</b>. '
+        'I judge on F1 (not accuracy) because a do-nothing model is already ~85% accurate but catches zero '
+        'buyers.</div></div>', unsafe_allow_html=True)
+
+    st.markdown('<span class="label">Engineered features</span>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hud">'
+        '<div class="about-line"><b>total_pages / total_duration</b> — how much and how long they browsed</div>'
+        '<div class="about-line"><b>avg_time_per_page</b> — how deeply they read</div>'
+        '<div class="about-line"><b>product_focus</b> — share of the session on product pages</div>'
+        '<div class="about-line"><b>has_page_value</b> — whether any valuable page was seen</div>'
+        '</div>', unsafe_allow_html=True)
+
+    st.markdown('<span class="label">How the "why" works</span>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hud"><div class="about-line">For each scan, the signal analysis takes one feature at a '
+        'time, swaps it to a typical value, and re-runs the model. The change in probability shows how much '
+        'that signal pushed the prediction toward BUY or NO-BUY. It uses only the trained model, no extra '
+        'libraries.</div></div>', unsafe_allow_html=True)
+
+    st.markdown('<span class="label">Built with</span>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hud"><div class="about-line">scikit-learn · pandas · numpy · matplotlib · Streamlit. '
+        'The app shares the exact same feature engineering as training (features.py), so there is no '
+        'train/serve skew.</div></div>', unsafe_allow_html=True)
+
+
 # the sidebar, styled like a system console with my branding, model stats and a how-it-works
 with st.sidebar:
     st.markdown("## INTENTRADAR")
@@ -248,137 +467,13 @@ st.markdown('<span class="label">Scanning a live session for purchase intent, so
 st.write("")
 
 
-# two ready-made scenarios so i can fill every input in one click during my demo.
-# high-intent should come out as buy, casual browser as no-buy.
-PRESETS = {
-    "Custom (enter your own below)": None,
-    "High-intent shopper": dict(
-        Administrative=3, Administrative_Duration=80.0, Informational=1,
-        Informational_Duration=20.0, ProductRelated=40, ProductRelated_Duration=1200.0,
-        BounceRates=0.005, ExitRates=0.01, PageValues=35.0, SpecialDay=0.0,
-        Month="Nov", VisitorType="Returning_Visitor", Weekend="True",
-        OperatingSystems=2, Browser=2, Region=1, TrafficType=2),
-    "Casual browser": dict(
-        Administrative=0, Administrative_Duration=0.0, Informational=0,
-        Informational_Duration=0.0, ProductRelated=2, ProductRelated_Duration=15.0,
-        BounceRates=0.2, ExitRates=0.2, PageValues=0.0, SpecialDay=0.0,
-        Month="Feb", VisitorType="New_Visitor", Weekend="False",
-        OperatingSystems=1, Browser=1, Region=3, TrafficType=1),
-}
-preset_name = st.selectbox("▸ Load scenario", list(PRESETS.keys()))
-# P holds the chosen preset, which i use as the default value of each input below
-P = PRESETS[preset_name] or PRESETS["High-intent shopper"]
+# two tabs: the scanner (my app) and an about page describing the model
+tab_scan, tab_about = st.tabs(["◉  SCANNER", "ℹ  ABOUT"])
+with tab_scan:
+    render_scanner()
+with tab_about:
+    render_about()
 
-# the month and visitor options the model was trained on
-MONTHS = ["Feb", "Mar", "May", "June", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-VISITORS = ["Returning_Visitor", "New_Visitor", "Other"]
-
-
-# my inputs, split into two columns with plain-english labels the target audience understands
-st.markdown('<span class="label">Session signals</span>', unsafe_allow_html=True)
-c1, c2 = st.columns(2)
-with c1:
-    product_related = st.number_input("Product pages viewed", 0, 800, int(P["ProductRelated"]))
-    product_dur = st.number_input("Time on product pages (sec)", 0.0, 60000.0, float(P["ProductRelated_Duration"]))
-    admin = st.number_input("Account/admin pages viewed", 0, 100, int(P["Administrative"]))
-    admin_dur = st.number_input("Time on admin pages (sec)", 0.0, 6000.0, float(P["Administrative_Duration"]))
-    info = st.number_input("Info pages viewed", 0, 100, int(P["Informational"]))
-    info_dur = st.number_input("Time on info pages (sec)", 0.0, 6000.0, float(P["Informational_Duration"]))
-with c2:
-    page_values = st.number_input("Page Value (Google Analytics)", 0.0, 400.0, float(P["PageValues"]),
-                                  help="Average value of the pages visited this session. Strongest signal in the model.")
-    bounce = st.slider("Bounce rate", 0.0, 1.0, float(P["BounceRates"]), 0.005)
-    exit_rate = st.slider("Exit rate", 0.0, 1.0, float(P["ExitRates"]), 0.005)
-    special_day = st.slider("Closeness to a special day", 0.0, 1.0, float(P["SpecialDay"]), 0.2,
-                            help="1.0 = right on a holiday like Valentine's Day.")
-    month = st.selectbox("Month", MONTHS, index=MONTHS.index(P["Month"]))
-    visitor = st.selectbox("Visitor type", VISITORS, index=VISITORS.index(P["VisitorType"]))
-    weekend = st.radio("Weekend session?", ["True", "False"],
-                       index=0 if P["Weekend"] == "True" else 1, horizontal=True)
-
-# the confusing technical codes are hidden in here so the main form stays clean
-with st.expander("▸ Advanced (technical session attributes)"):
-    a1, a2, a3, a4 = st.columns(4)
-    op_sys = a1.number_input("OS code", 1, 8, int(P["OperatingSystems"]))
-    browser = a2.number_input("Browser code", 1, 13, int(P["Browser"]))
-    region = a3.number_input("Region code", 1, 9, int(P["Region"]))
-    traffic = a4.number_input("Traffic type", 1, 20, int(P["TrafficType"]))
-
-# the widgets already block out-of-range numbers, but i check weird combinations myself
-errors = []
-if (product_related + admin + info) == 0 and (product_dur + admin_dur + info_dur) > 0:
-    errors.append("Time was recorded but no pages were viewed, please check the inputs.")
-if bounce > exit_rate + 1e-9:
-    errors.append("Bounce rate cannot be higher than exit rate for a session.")
-
-st.write("")
-# everything below only runs when the scan button is clicked
-if st.button("▸ SCAN SESSION", type="primary", use_container_width=True):
-    if errors:
-        for msg in errors:
-            st.error(msg)
-    else:
-        # try/except so a bad input shows a message instead of crashing the app
-        try:
-            # put all my inputs into one row
-            row = dict(
-                Administrative=admin, Administrative_Duration=admin_dur,
-                Informational=info, Informational_Duration=info_dur,
-                ProductRelated=product_related, ProductRelated_Duration=product_dur,
-                BounceRates=bounce, ExitRates=exit_rate, PageValues=page_values,
-                SpecialDay=special_day, OperatingSystems=op_sys, Browser=browser,
-                Region=region, TrafficType=traffic, Month=month,
-                VisitorType=visitor, Weekend=weekend)
-            row_df = pd.DataFrame([row])
-
-            # a short pause + spinner to make it feel like it's really scanning
-            with st.spinner("▸ ANALYZING SESSION SIGNALS..."):
-                time.sleep(0.7)
-                proba = _proba(row_df)
-                will_buy = proba >= 0.5
-                effects = explain(row_df)
-        except Exception as e:
-            st.error(f"Scan failed, please check the inputs. Details: {e}")
-            st.stop()
-
-        # play the matching HUD clip over the whole screen, then it fades to reveal the result
-        play_video("buy" if will_buy else "nobuy")
-
-        # left: the gauge. right: the verdict card and recommended action.
-        g_col, v_col = st.columns([1, 1.3])
-        with g_col:
-            st.pyplot(gauge(proba), use_container_width=True)
-        with v_col:
-            if will_buy:
-                st.markdown(
-                    f'<div class="verdict buy"><div class="label">target acquired</div>'
-                    f'<div class="big">◉ HIGH INTENT</div>{proba*100:.1f}% probability of purchase</div>',
-                    unsafe_allow_html=True)
-                st.markdown('<div class="hud"><span class="label">Recommended action</span><br>'
-                            'Trigger a real-time nudge: a free-shipping banner, live-chat offer, '
-                            'or a small discount.</div>', unsafe_allow_html=True)
-            else:
-                st.markdown(
-                    f'<div class="verdict nobuy"><div class="label">low signal</div>'
-                    f'<div class="big">○ LOW INTENT</div>{proba*100:.1f}% probability of purchase</div>',
-                    unsafe_allow_html=True)
-                st.markdown('<div class="hud"><span class="label">Recommended action</span><br>'
-                            'Hold incentives and let the visitor browse, to avoid wasting discounts.</div>',
-                            unsafe_allow_html=True)
-
-        # the "why this prediction" section: the bar chart on the left, readable bullets on the right
-        st.write("")
-        st.markdown('<span class="label">Signal analysis: what is driving this call</span>', unsafe_allow_html=True)
-        d_col, r_col = st.columns([1.3, 1])
-        with d_col:
-            st.pyplot(drivers_chart(effects), use_container_width=True)
-        with r_col:
-            for label, delta in effects:
-                arrow = "▲ toward BUY" if delta >= 0 else "▼ toward NO-BUY"
-                col = "#22d3ee" if delta >= 0 else "#ffb020"
-                st.markdown(
-                    f'<div class="sys-line"><span style="color:{col}">{arrow}</span> {label}</div>',
-                    unsafe_allow_html=True)
 
 # a small footer line
 st.write("")
