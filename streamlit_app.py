@@ -115,12 +115,15 @@ def load_model():
     # path relative to this file so it works after i deploy too
     path = os.path.join(os.path.dirname(__file__), "models", "model.pkl")
     art = joblib.load(path)
-    # i saved the model and the training columns together, so i unpack both
-    return art["model"], list(art["columns"])
+    # i saved the model, its training columns AND the tuned decision threshold together.
+    # the threshold matters: my notebook tunes it to ~0.3 (not the default 0.5) because the
+    # data is imbalanced, so if the app ignored it the app would disagree with my notebook.
+    # .get() with a 0.5 fallback keeps this working with an older pkl that has no threshold.
+    return art["model"], list(art["columns"]), float(art.get("threshold", 0.5))
 
 # if the model file is missing, show a clear message instead of crashing
 try:
-    model, train_columns = load_model()
+    model, train_columns, THRESHOLD = load_model()
 except Exception as e:
     st.error(f"SYSTEM OFFLINE. Could not load models/model.pkl. Details: {e}")
     st.stop()
@@ -128,9 +131,7 @@ except Exception as e:
 
 # a "typical" session (medians / most common values from my training data).
 # my explainer swaps each signal to this to see how much that signal changed the result.
-# i only need entries for the features EXPLAIN actually touches below, my final model dropped
-# Region, Browser, OperatingSystems, Weekend and SpecialDay in feature selection, so those
-# signals can't move the prediction and i don't explain them.
+# i only need entries for the features EXPLAIN actually touches below
 BASELINE = {
     "Administrative": 1.0, "ProductRelated": 18.0, "ProductRelated_Duration": 608.94,
     "BounceRates": 0.0029, "ExitRates": 0.025, "PageValues": 0.0,
@@ -169,7 +170,7 @@ def gauge(proba):
     # my arc-reactor style dial. i draw a dark ring, then a cyan (or amber) glowing arc
     # that fills up to the probability, with the % in the middle.
     pct = proba * 100
-    color = "#22d3ee" if proba >= 0.5 else "#ffb020"
+    color = "#22d3ee" if proba >= THRESHOLD else "#ffb020"   # same cut-off as the verdict, so they agree
     fig, ax = plt.subplots(figsize=(3.4, 3.4))
     fig.patch.set_alpha(0.0); ax.set_aspect("equal"); ax.axis("off")
     ax.set_xlim(-1.25, 1.25); ax.set_ylim(-1.25, 1.25)
@@ -231,28 +232,23 @@ def play_video(kind):
 
 # two ready-made scenarios so i can fill every input in one click during my demo.
 # high-intent should come out as buy, casual browser as no-buy.
-# note: no Weekend/SpecialDay/OperatingSystems/Browser/Region here, my final model dropped
-# those in feature selection so i don't ask for them any more (see 6. Iterative Model
-# Development > Iteration 2 in the notebook for why).
 PRESETS = {
     "Custom (enter your own below)": None,
     "High-intent shopper": dict(
         Administrative=3, Administrative_Duration=80.0, Informational=1,
         Informational_Duration=20.0, ProductRelated=40, ProductRelated_Duration=1200.0,
-        BounceRates=0.005, ExitRates=0.01, PageValues=35.0,
-        Month="Nov", VisitorType="Returning_Visitor", TrafficType=2),
+        BounceRates=0.005, ExitRates=0.01, PageValues=35.0, SpecialDay=0.0,
+        Month="Nov", VisitorType="Returning_Visitor", TrafficType=2,
+        OperatingSystems=2, Browser=2, Region=1, Weekend=True),
     "Casual browser": dict(
         Administrative=0, Administrative_Duration=0.0, Informational=0,
         Informational_Duration=0.0, ProductRelated=2, ProductRelated_Duration=15.0,
-        BounceRates=0.2, ExitRates=0.2, PageValues=0.0,
-        Month="Feb", VisitorType="New_Visitor", TrafficType=1),
+        BounceRates=0.2, ExitRates=0.2, PageValues=0.0, SpecialDay=0.0,
+        Month="Feb", VisitorType="New_Visitor", TrafficType=1,
+        OperatingSystems=1, Browser=1, Region=3, Weekend=False),
 }
 MONTHS = ["Feb", "Mar", "May", "June", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 VISITORS = ["Returning_Visitor", "New_Visitor", "Other"]
-# fixed values for the 5 features my final model doesn't use. features.py still needs these
-# columns present to build the same shape it was trained on, but their actual value makes no
-# difference to the prediction, so i don't bother the user with sliders/inputs for them.
-UNUSED_DEFAULTS = dict(Weekend=False, SpecialDay=0.0, OperatingSystems=2, Browser=2, Region=1)
 
 # my running list of every scan this session (inputs + result), kept in session_state so it
 # survives reruns. i show it as a table and let the user download it as a CSV.
@@ -282,10 +278,20 @@ def render_scanner():
         exit_rate = st.slider("Exit rate", 0.0, 1.0, float(P["ExitRates"]), 0.005)
         month = st.selectbox("Month", MONTHS, index=MONTHS.index(P["Month"]))
         visitor = st.selectbox("Visitor type", VISITORS, index=VISITORS.index(P["VisitorType"]))
-        # traffic type survived feature selection (it is one of my final 39 columns), so it
-        # gets its own input, unlike OS/Browser/Region/Weekend/SpecialDay which i dropped
         traffic = st.number_input("Traffic source code", 1, 20, int(P["TrafficType"]),
-                                  help="Which channel brought the visitor in (1-20). One of the features my tuned model actually uses.")
+                                  help="Which channel brought the visitor in (1-20).")
+
+    # a second row for the remaining raw features, my final model (cycle 1) uses all 17
+    st.markdown('<span class="label">Other session details</span>', unsafe_allow_html=True)
+    c3, c4 = st.columns(2)
+    with c3:
+        special_day = st.slider("Closeness to a special day", 0.0, 1.0, float(P["SpecialDay"]), 0.1,
+                                help="How close the session is to a special day (e.g. Valentine's, Mother's Day).")
+        weekend = st.checkbox("Weekend session", bool(P["Weekend"]))
+    with c4:
+        os_code = st.number_input("Operating system code", 1, 8, int(P["OperatingSystems"]))
+        browser_code = st.number_input("Browser code", 1, 13, int(P["Browser"]))
+        region_code = st.number_input("Region code", 1, 9, int(P["Region"]))
 
     # the widgets already block out-of-range numbers, but i check weird combinations myself
     errors = []
@@ -303,37 +309,32 @@ def render_scanner():
         else:
             # try/except so a bad input shows a message instead of crashing the app
             try:
-                # put all my inputs into one row. features.py still needs Weekend/SpecialDay/
-                # OperatingSystems/Browser/Region columns to exist (it one-hot encodes them),
-                # so i fill those with the fixed UNUSED_DEFAULTS, their actual value can't
-                # change the prediction since my final model dropped them in feature selection
                 row = dict(
                     Administrative=admin, Administrative_Duration=admin_dur,
                     Informational=info, Informational_Duration=info_dur,
                     ProductRelated=product_related, ProductRelated_Duration=product_dur,
                     BounceRates=bounce, ExitRates=exit_rate, PageValues=page_values,
-                    TrafficType=traffic, Month=month, VisitorType=visitor,
-                    **UNUSED_DEFAULTS)
+                    SpecialDay=special_day, Weekend=weekend,
+                    OperatingSystems=os_code, Browser=browser_code, Region=region_code,
+                    TrafficType=traffic, Month=month, VisitorType=visitor)
                 row_df = pd.DataFrame([row])
 
                 # a short pause + spinner to make it feel like it's really scanning
                 with st.spinner("▸ ANALYZING SESSION SIGNALS..."):
                     time.sleep(0.7)
                     proba = _proba(row_df)
-                    will_buy = proba >= 0.5
+                    # compare against my TUNED threshold from the notebook, not 0.5
+                    will_buy = proba >= THRESHOLD
                     effects = explain(row_df)
             except Exception as e:
                 st.error(f"Scan failed, please check the inputs. Details: {e}")
                 st.stop()
 
-            # log this scan (the result first, then the inputs that actually matter) to the
-            # history, newest on top. i leave out UNUSED_DEFAULTS, they are fixed constants
-            # not real inputs, so showing them in the history/CSV would be misleading
-            logged_inputs = {k: v for k, v in row.items() if k not in UNUSED_DEFAULTS}
+            # log this scan (the result first, then every input) to the history, newest on top
             st.session_state.history.insert(0, {
                 "Decision": "Buy" if will_buy else "No buy",
                 "Probability %": round(proba * 100, 1),
-                **logged_inputs,
+                **row,
             })
 
             # play the matching HUD clip over the whole screen, then it fades to reveal the result
@@ -412,23 +413,34 @@ def render_about():
     st.markdown('<span class="label">The model</span>', unsafe_allow_html=True)
     st.markdown(
         '<div class="hud">'
-        '<div class="about-line"><b>Gradient Boosting</b> classifier (scikit-learn), chosen against a '
-        'baseline and three other models by <b>F1</b>, then tuned with RandomizedSearchCV.</div>'
-        '<div class="about-line">F1 <b>0.68</b> &nbsp;·&nbsp; ROC-AUC <b>0.94</b> &nbsp;·&nbsp; accuracy <b>0.91</b>. '
+        '<div class="about-line"><b>Gradient Boosting</b> classifier (scikit-learn). All four candidate '
+        'models were tuned with RandomizedSearchCV <i>before</i> being compared, so the winner was picked '
+        'at its own best setting rather than at whatever its defaults happened to give.</div>'
+        '<div class="about-line">F1 <b>0.684</b> &nbsp;·&nbsp; ROC-AUC <b>0.94</b> &nbsp;·&nbsp; recall <b>0.73</b>. '
         'I judge on F1 (not accuracy) because a do-nothing model is already ~85% accurate but catches zero '
         'buyers.</div></div>', unsafe_allow_html=True)
 
     st.markdown('<span class="label">Iterative development</span>', unsafe_allow_html=True)
     st.markdown(
         '<div class="hud">'
-        '<div class="about-line"><b>Feature engineering</b> — i tried 4 combined features '
-        '(total pages, total duration, etc). they did not improve Gradient Boosting, it can already '
-        'learn these interactions from the raw features, so i did not keep them.</div>'
-        '<div class="about-line"><b>Feature selection</b> — using feature importance, i removed the '
-        '5 weakest raw features (Region, Browser, OperatingSystems, Weekend, SpecialDay). this '
-        'slightly improved recall and F1.</div>'
-        '<div class="about-line"><b>Hyperparameter tuning</b> — RandomizedSearchCV over n_estimators, '
-        'max_depth and learning_rate improved F1 again, from ~0.66 at baseline to <b>0.68</b> tuned.</div>'
+        '<div class="about-line"><b>Cycle 1 (deployed)</b>: 5 models trained on the full 17 raw '
+        'features (all one-hot encoded), with the 4 real algorithms each tuned via RandomizedSearchCV '
+        '(2 hyperparameters, 5-fold CV, scored on F1). Gradient Boosting won with F1 <b>0.68</b>.</div>'
+        '<div class="about-line"><b>Cycle 2 (tested, rejected)</b>: engineered 4 combined features '
+        '(total pages, total duration, etc), then retuned Gradient Boosting the same way. F1 dropped, '
+        'the model can already learn these interactions on its own, so i kept the raw features.</div>'
+        '<div class="about-line"><b>Cycle 3 (tested, rejected)</b>: used Cycle 1\'s feature importance '
+        'to drop the 5 weakest features, then retuned again. F1 improved over the untuned version but '
+        'still fell short of Cycle 1, so the full feature set stayed in.</div>'
+        '<div class="about-line">Both later cycles were fair, tuned attempts and both honestly did not '
+        'beat the properly-tuned baseline, so <b>Cycle 1 is the model deployed here</b>, using all 17 '
+        'raw features, which is why every session detail below is a live, meaningful input.</div>'
+        '<div class="about-line"><b>Decision threshold (accepted)</b>: the one change that did work. '
+        'Only ~15% of sessions convert, so the default 0.5 cut-off is too strict. I picked the threshold '
+        'on out-of-fold training predictions (never the test set) and it landed on <b>0.31</b>, raising '
+        'F1 and lifting recall from 0.62 to <b>0.73</b>, the model now catches far more real buyers. It beat '
+        '0.5 on 8 out of 8 different train/test splits, so it is a real effect, not luck. This app uses '
+        'that exact threshold, loaded from the saved model file.</div>'
         '</div>', unsafe_allow_html=True)
 
     st.markdown('<span class="label">How the "why" works</span>', unsafe_allow_html=True)
@@ -454,9 +466,10 @@ with st.sidebar:
     st.markdown('<span class="label">Model readout</span>', unsafe_allow_html=True)
     st.markdown(
         '<div class="sys-line"><span class="sys-key">engine  </span> Gradient Boosting (tuned)</div>'
-        '<div class="sys-line"><span class="sys-key">F1      </span> 0.68</div>'
+        '<div class="sys-line"><span class="sys-key">F1      </span> 0.684</div>'
         '<div class="sys-line"><span class="sys-key">ROC-AUC </span> 0.94</div>'
-        '<div class="sys-line"><span class="sys-key">accuracy</span> 0.91</div>'
+        '<div class="sys-line"><span class="sys-key">recall  </span> 0.73</div>'
+        f'<div class="sys-line"><span class="sys-key">cut-off </span> {THRESHOLD:.2f} (tuned)</div>'
         '<div class="sys-line"><span class="sys-key">dataset </span> UCI Online Shoppers</div>',
         unsafe_allow_html=True)
     st.markdown("---")
