@@ -2,7 +2,6 @@
 import os
 import time
 import joblib
-import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib
@@ -293,16 +292,23 @@ def render_scanner():
         browser_code = st.number_input("Browser code", 1, 13, int(P["Browser"]))
         region_code = st.number_input("Region code", 1, 9, int(P["Region"]))
 
-    # the widgets already block out-of-range numbers, but i check weird combinations myself
-    errors = []
+    # the widgets already block out-of-range numbers, but i check weird combinations myself.
+    # errors are impossible inputs and stop the scan; warnings are just unusual and let it run.
+    errors, warnings_ = [], []
     if (product_related + admin + info) == 0 and (product_dur + admin_dur + info_dur) > 0:
         errors.append("Time was recorded but no pages were viewed, please check the inputs.")
+    # a bounce is usually a kind of exit, so bounce > exit is unusual. but these are averages
+    # over the pages in a session, and 175 real sessions in my dataset genuinely do this, so i
+    # flag it instead of blocking it, otherwise the app would reject valid input.
     if bounce > exit_rate + 1e-9:
-        errors.append("Bounce rate cannot be higher than exit rate for a session.")
+        warnings_.append("Bounce rate is higher than exit rate, which is unusual but does occur. "
+                         "Scanning anyway.")
 
     st.write("")
     # everything below only runs when the scan button is clicked
     if st.button("▸ SCAN SESSION", type="primary", use_container_width=True):
+        for msg in warnings_:
+            st.warning(msg)
         if errors:
             for msg in errors:
                 st.error(msg)
